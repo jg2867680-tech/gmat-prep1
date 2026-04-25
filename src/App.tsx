@@ -94,7 +94,35 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
+  const [showMobileHeader, setShowMobileHeader] = useState(true);
+  const [lastScrollY, setLastScrollY] = useState(0);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      if (window.scrollY > lastScrollY && window.scrollY > 100) {
+        setShowMobileHeader(false);
+      } else {
+        setShowMobileHeader(true);
+      }
+      setLastScrollY(window.scrollY);
+    };
+
+    window.addEventListener("scroll", handleScroll);
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, [lastScrollY]);
+
   // Auth check
+  useEffect(() => {
+    if (isMobileMenuOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "unset";
+    }
+    return () => {
+      document.body.style.overflow = "unset";
+    };
+  }, [isMobileMenuOpen]);
+
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (token) {
@@ -134,7 +162,7 @@ export default function App() {
       <Toaster position="top-right" />
       
       {/* Mobile Header */}
-      <div className="md:hidden flex items-center justify-between p-4 bg-background border-b sticky top-0 z-50">
+      <div className={`md:hidden flex items-center justify-between p-4 bg-background border-b sticky top-0 z-50 transition-transform duration-300 ${showMobileHeader ? "translate-y-0" : "-translate-y-full"}`}>
         <div className="flex items-center gap-2">
           <div className="bg-primary p-1.5 rounded-lg">
             <BrainCircuit className="text-white" size={20} />
@@ -146,13 +174,73 @@ export default function App() {
         </Button>
       </div>
 
-      {/* Sidebar */}
-      <aside className={`
-        fixed inset-0 z-40 bg-background border-r w-64 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0
-        ${isMobileMenuOpen ? "translate-x-0" : "-translate-x-full"}
-      `}>
+      {/* Mobile Sidebar Overlay */}
+      <AnimatePresence>
+        {isMobileMenuOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="fixed inset-0 bg-white dark:bg-slate-950 z-[60] md:hidden"
+            />
+            <motion.aside
+              initial={{ x: "-100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "-100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="fixed inset-y-0 left-0 z-[70] w-72 bg-background border-r shadow-2xl md:hidden"
+            >
+              <div className="flex flex-col h-full p-6">
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-primary p-2 rounded-xl text-white shadow-lg shadow-primary/20">
+                      <BrainCircuit size={24} />
+                    </div>
+                    <span className="font-bold text-xl tracking-tight">CAT Prep Pro</span>
+                  </div>
+                  <Button variant="ghost" size="icon" onClick={() => setIsMobileMenuOpen(false)}>
+                    <X size={20} />
+                  </Button>
+                </div>
+                <nav className="flex-1 space-y-2">
+                  <SidebarItem icon={LayoutDashboard} label="Dashboard" active={activeTab === "dashboard"} onClick={() => { setActiveTab("dashboard"); setIsMobileMenuOpen(false); }} />
+                  <SidebarItem icon={BookOpen} label="Course Materials" active={activeTab === "courses"} onClick={() => { setActiveTab("courses"); setIsMobileMenuOpen(false); }} />
+                  <SidebarItem icon={Video} label="Video Lectures" active={activeTab === "videos"} onClick={() => { setActiveTab("videos"); setIsMobileMenuOpen(false); }} />
+                  <SidebarItem icon={ClipboardList} label="Daily Practice" active={activeTab === "daily-test"} onClick={() => { setActiveTab("daily-test"); setIsMobileMenuOpen(false); }} />
+                  <SidebarItem icon={History} label="Test History" active={activeTab === "history"} onClick={() => { setActiveTab("history"); setIsMobileMenuOpen(false); }} />
+                  <SidebarItem icon={BarChart3} label="Analytics" active={activeTab === "analytics"} onClick={() => { setActiveTab("analytics"); setIsMobileMenuOpen(false); }} />
+                  
+                  {user.role === "admin" && (
+                    <>
+                      <div className="pt-6 pb-2 text-[10px] font-bold text-muted-foreground uppercase tracking-[0.2em] px-3">Admin Panel</div>
+                      <SidebarItem icon={ShieldCheck} label="Admin Dashboard" active={activeTab === "admin"} onClick={() => { setActiveTab("admin"); setIsMobileMenuOpen(false); }} />
+                    </>
+                  )}
+                </nav>
+                <div className="pt-6 border-t">
+                  <div className="flex items-center gap-3 px-3 mb-6">
+                    <div className="w-12 h-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary font-bold text-lg">
+                      {user.name.charAt(0)}
+                    </div>
+                    <div className="flex-1 overflow-hidden">
+                      <p className="font-bold truncate">{user.name}</p>
+                      <p className="text-xs text-muted-foreground truncate capitalize">{user.role}</p>
+                    </div>
+                  </div>
+                  <SidebarItem icon={LogOut} label="Logout" active={false} onClick={handleLogout} />
+                </div>
+              </div>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Desktop Sidebar */}
+      <aside className="hidden md:flex flex-col w-64 bg-background border-r sticky top-0 h-screen">
         <div className="flex flex-col h-full p-4">
-          <div className="hidden md:flex items-center gap-3 mb-8 px-2">
+          <div className="flex items-center gap-3 mb-8 px-2 mt-2">
             <div className="bg-primary p-2 rounded-xl shadow-lg shadow-primary/20">
               <BrainCircuit className="text-white" size={24} />
             </div>
@@ -160,17 +248,17 @@ export default function App() {
           </div>
 
           <nav className="flex-1 space-y-1">
-            <SidebarItem icon={LayoutDashboard} label="Dashboard" active={activeTab === "dashboard"} onClick={() => { setActiveTab("dashboard"); setIsMobileMenuOpen(false); }} />
-            <SidebarItem icon={BookOpen} label="Course Materials" active={activeTab === "courses"} onClick={() => { setActiveTab("courses"); setIsMobileMenuOpen(false); }} />
-            <SidebarItem icon={Video} label="Video Lectures" active={activeTab === "videos"} onClick={() => { setActiveTab("videos"); setIsMobileMenuOpen(false); }} />
-            <SidebarItem icon={ClipboardList} label="Daily Practice" active={activeTab === "daily-test"} onClick={() => { setActiveTab("daily-test"); setIsMobileMenuOpen(false); }} />
-            <SidebarItem icon={History} label="Test History" active={activeTab === "history"} onClick={() => { setActiveTab("history"); setIsMobileMenuOpen(false); }} />
-            <SidebarItem icon={BarChart3} label="Analytics" active={activeTab === "analytics"} onClick={() => { setActiveTab("analytics"); setIsMobileMenuOpen(false); }} />
+            <SidebarItem icon={LayoutDashboard} label="Dashboard" active={activeTab === "dashboard"} onClick={() => setActiveTab("dashboard")} />
+            <SidebarItem icon={BookOpen} label="Course Materials" active={activeTab === "courses"} onClick={() => setActiveTab("courses")} />
+            <SidebarItem icon={Video} label="Video Lectures" active={activeTab === "videos"} onClick={() => setActiveTab("videos")} />
+            <SidebarItem icon={ClipboardList} label="Daily Practice" active={activeTab === "daily-test"} onClick={() => setActiveTab("daily-test")} />
+            <SidebarItem icon={History} label="Test History" active={activeTab === "history"} onClick={() => setActiveTab("history")} />
+            <SidebarItem icon={BarChart3} label="Analytics" active={activeTab === "analytics"} onClick={() => setActiveTab("analytics")} />
             
             {user.role === "admin" && (
               <>
                 <div className="pt-4 pb-2 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Admin Panel</div>
-                <SidebarItem icon={ShieldCheck} label="Admin Dashboard" active={activeTab === "admin"} onClick={() => { setActiveTab("admin"); setIsMobileMenuOpen(false); }} />
+                <SidebarItem icon={ShieldCheck} label="Admin Dashboard" active={activeTab === "admin"} onClick={() => setActiveTab("admin")} />
               </>
             )}
           </nav>
