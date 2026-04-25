@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";Fgemini
+import jwt from "jsonwebtoken";
 import { google } from "googleapis";
 import { GoogleGenAI, Type } from "@google/genai";
 
