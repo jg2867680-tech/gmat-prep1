@@ -841,7 +841,7 @@ function DailyTest({ user }: { user: UserProfile }) {
                       <Badge variant="secondary">Pending</Badge>
                     )}
                   </div>
-                  <CardTitle className="text-lg">CAT Practice Test</CardTitle>
+                  <CardTitle className="text-lg">Daily Practice Test</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <p className="text-sm text-muted-foreground mb-4">
