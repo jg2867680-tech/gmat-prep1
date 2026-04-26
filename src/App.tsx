@@ -405,7 +405,7 @@ function Dashboard({ user, setActiveTab }: { user: UserProfile, setActiveTab: (t
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Welcome back, {user.name.split(' ')[0]}! 👋</h1>
-          <p className="text-muted-foreground">Here's what's happening with your CAT preparation today.</p>
+          <p className="text-muted-foreground">Here's what's happening with your preparation today.</p>
         </div>
         <div className="flex items-center gap-2 bg-background p-1 rounded-lg border shadow-sm">
           <Button variant="ghost" size="sm" className="gap-2">
@@ -1309,12 +1309,6 @@ function Analytics({ user }: { user: UserProfile }) {
           <p className="text-sm text-muted-foreground font-bold uppercase mb-2">Total Questions</p>
           <div className="text-4xl font-black">
             {results.length * 20}
-          </div>
-        </Card>
-        <Card className="p-6 text-center">
-          <p className="text-sm text-muted-foreground font-bold uppercase mb-2">Improvement</p>
-          <div className="text-4xl font-black text-green-500">
-            +12%
           </div>
         </Card>
       </div>
