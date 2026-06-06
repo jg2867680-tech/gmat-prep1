@@ -224,7 +224,7 @@ const initialDB: DB = {
       section: "Quantitative",
       googleSheetLink: "#",
       googleDriveLink: "#",
-      description: "Basics of Number Systems for CAT.",
+      description: "Basics of Number Systems for GMAT.",
       dateAdded: new Date().toISOString()
     }
   ],
@@ -248,7 +248,7 @@ const initialDB: DB = {
   announcements: [
     {
       id: "AN001",
-      title: "Welcome to CAT Prep Pro",
+      title: "Welcome to GMAT Prep Pro",
       content: "Good luck with your preparation!",
       createdDate: new Date().toISOString(),
       createdBy: "Admin"
@@ -301,10 +301,10 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
     
-    const prompt = `Generate 20 MCQ questions for CAT exam preparation.
+    const prompt = `Generate 20 MCQ questions for GMAT exam preparation.
     Distribution:
     - 7 Quantitative Aptitude (Medium-Hard difficulty)
-    - 7 DILR (Data Interpretation & Logical Reasoning)
+    - 7 DI (Data Insights)
     - 6 VARC (Verbal Ability & Reading Comprehension)
     Return exactly 20 questions in JSON format.
     Each question must have:
