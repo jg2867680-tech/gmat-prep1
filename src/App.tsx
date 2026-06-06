@@ -166,7 +166,7 @@ export default function App() {
           <div className="bg-primary p-1.5 rounded-lg">
             <BrainCircuit className="text-white" size={20} />
           </div>
-          <span className="font-bold text-lg tracking-tight">CAT Prep Elite</span>
+          <span className="font-bold text-lg tracking-tight">GMAT Prep Elite</span>
         </div>
         <Button variant="ghost" size="icon" onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
           {isMobileMenuOpen ? <X /> : <Menu />}
@@ -197,7 +197,7 @@ export default function App() {
                     <div className="bg-primary p-2 rounded-xl text-white shadow-lg shadow-primary/20">
                       <BrainCircuit size={24} />
                     </div>
-                    <span className="font-bold text-xl tracking-tight">CAT Prep Elite</span>
+                    <span className="font-bold text-xl tracking-tight">GMAT Prep Elite</span>
                   </div>
                   <Button variant="ghost" size="icon" onClick={() => setIsMobileMenuOpen(false)}>
                     <X size={20} />
@@ -243,7 +243,7 @@ export default function App() {
             <div className="bg-primary p-2 rounded-xl shadow-lg shadow-primary/20">
               <BrainCircuit className="text-white" size={24} />
             </div>
-            <span className="font-bold text-xl tracking-tight">CAT Prep Elite</span>
+            <span className="font-bold text-xl tracking-tight">GMAT Prep Elite</span>
           </div>
 
           <nav className="flex-1 space-y-1">
@@ -335,8 +335,8 @@ function LoginPage({ onLogin }: { onLogin: (u: UserProfile) => void }) {
               <BrainCircuit className="text-white" size={32} />
             </div>
           </div>
-          <CardTitle className="text-2xl font-bold tracking-tight">CAT Prep Elite</CardTitle>
-          <CardDescription>Login and Give wings to your CAT prep.</CardDescription>
+          <CardTitle className="text-2xl font-bold tracking-tight">GMAT Prep Elite</CardTitle>
+          <CardDescription>Login and Give wings to your GMAT prep.</CardDescription>
         </CardHeader>
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">
