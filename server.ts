@@ -61,9 +61,10 @@ const SHEET_CONFIG: Record<string, string[]> = {
   Students: ["id", "email", "password", "name", "phone", "registrationDate", "status", "role"],
   CourseMaterials: ["id", "topicName", "section", "googleSheetLink", "googleDriveLink", "description", "dateAdded"],
   VideoLectures: ["id", "topicName", "section", "googleSheetLink", "googleDriveLink", "duration", "instructorName", "dateUploaded"],
-  UnverifiedQuestions: ["id", "section", "questionText", "options", "correctAnswer", "explanation", "difficulty"],
-  ApprovedQuestions: ["id", "section", "questionText", "options", "correctAnswer", "explanation", "difficulty", "approvedDate"],
-  DailyTests: ["id", "testName", "testDate", "questionIds"],
+ UnverifiedQuestions: ["id", "section", "questionType", "questionText", "options", "correctAnswer", "typeData", "explanation", "difficulty", "passageId", "targetExam"],
+  ApprovedQuestions: ["id", "section", "questionType", "questionText", "options", "correctAnswer", "typeData", "explanation", "difficulty", "approvedDate", "passageId", "targetExam"],
+  DailyTests: ["id", "name", "section", "durationMinutes", "questionIds", "passageIds", "targetExam", "publishedDate"],
+   DailyPassages: ["id", "title", "kind", "text", "data", "chartImageUrl", "targetExam"],
   TestResults: ["id", "studentId", "testDate", "testId", "testName", "totalScore", "correctAnswers", "wrongAnswers", "skippedQuestions", "timeSpent", "sectionScores", "studentAnswers"],
   SectionalTests: ["id", "name", "section", "durationMinutes", "questionIds", "passageIds", "targetExam", "publishedDate"],
   SectionalQuestions: ["id", "section", "questionType", "questionText", "options", "correctAnswer", "typeData", "explanation", "difficulty", "passageId", "targetExam"],
@@ -148,30 +149,30 @@ async function fetchSheetData(range: string, spreadsheetId: string | undefined =
     });
 
     // Unpack JSON-blob columns into the flat shape the frontend expects.
-    if (range === "SectionalQuestions") {
+    if (range === "SectionalQuestions" || range === "ApprovedQuestions") {
       return mapped.map((q: any) => {
         const { typeData, ...rest } = q;
         return typeData && typeof typeData === "object" ? { ...rest, ...typeData } : rest;
       });
     }
-    if (range === "SectionalPassages") {
-      return mapped.map((p: any) => {
-        const { data, ...rest } = p;
-        if (p.kind === "table") {
-          if (!data || (Array.isArray(data) && data.length === 0)) {
-            console.warn(`⚠️  SectionalPassages row "${p.id}" has kind="table" but empty/missing "data" column.`);
-          }
-          return { ...rest, table: data };
-        }
-        if (p.kind === "tabs") {
-          if (!data || (Array.isArray(data) && data.length === 0)) {
-            console.warn(`⚠️  SectionalPassages row "${p.id}" has kind="tabs" but empty/missing "data" column.`);
-          }
-          return { ...rest, tabs: data };
-        }
-        return rest;
-      });
+if (range === "SectionalPassages" || range === "DailyPassages") {
+  return mapped.map((p: any) => {
+    const { data, ...rest } = p;
+    if (p.kind === "table") {
+      if (!data || (Array.isArray(data) && data.length === 0)) {
+        console.warn(`⚠️  ${range} row "${p.id}" has kind="table" but empty/missing "data" column.`);
+      }
+      return { ...rest, table: data };
     }
+    if (p.kind === "tabs") {
+      if (!data || (Array.isArray(data) && data.length === 0)) {
+        console.warn(`⚠️  ${range} row "${p.id}" has kind="tabs" but empty/missing "data" column.`);
+      }
+      return { ...rest, tabs: data };
+    }
+    return rest;
+  });
+}
 
     return mapped;
   } catch (err: any) {
@@ -247,6 +248,7 @@ interface DB {
   unverifiedQuestions: any[];
   approvedQuestions: any[];
   dailyTests: any[];
+  dailyPassages: any[];
   testResults: any[];
   assignedTests: any[];
   announcements: any[];
@@ -313,6 +315,7 @@ const initialDB: DB = {
   unverifiedQuestions: [],
   approvedQuestions: [],
   dailyTests: [],
+  dailyPassages: [],
   testResults: [],
   assignedTests: [],
   sectionalTests: [],
@@ -558,57 +561,86 @@ Ambiguous wording that makes a question unfair rather than hard
 
   // ── Daily Tests ──────────────────────────────────────────────────────────────
 
-  app.post("/api/daily-test/publish", authenticateToken, async (req: any, res) => {
-    if (req.user.role !== "admin") return res.sendStatus(403);
-    const { testDate, questionIds } = req.body; // testDate format: YYYY-MM-DD
+app.post("/api/daily-test/publish", authenticateToken, async (req: any, res) => {
+  if (req.user.role !== "admin") return res.sendStatus(403);
+  const { name, durationMinutes, questionIds, passageIds, targetExam } = req.body;
 
-    if (!testName || !testDate || !questionIds || !Array.isArray(questionIds) || questionIds.length === 0) {
-      return res.status(400).json({ message: "Invalid test data" });
-    }
+  if (!name || !questionIds || !Array.isArray(questionIds) || questionIds.length === 0) {
+    return res.status(400).json({ message: "Invalid test data" });
+  }
 
-    const testId = `DT${Date.now()}`;
-    const newTest = { id: testId, testName, testDate, questionIds };
+ const testId = `DT${Date.now()}`;
+  const newTest = {
+    id: testId,
+    name,
+    section: "Mixed", // daily tests span Quant+DILR+VARC, so this column is just a label here
+    durationMinutes: durationMinutes || 45,
+    questionIds,
+    passageIds: passageIds || [],
+    targetExam: targetExam || "GMAT",
+    publishedDate: new Date().toISOString(),
+  };
 
-    await appendSheetData("DailyTests", newTest);
 
-    const db = getLocalDB();
-    db.dailyTests.push(newTest);
-    saveLocalDB(db);
+  await appendSheetData("DailyTests", newTest);
 
-    res.json({ success: true, testId });
-  });
+  const db = getLocalDB();
+  db.dailyTests.push(newTest);
+  saveLocalDB(db);
+
+  res.json({ success: true, testId });
+});
 
   app.get("/api/daily-tests", authenticateToken, async (req, res) => {
     const dailyTests = (await fetchSheetData("DailyTests")) || getLocalDB().dailyTests;
-    const sortedTests = [...dailyTests].sort((a, b) => b.testDate.localeCompare(a.testDate));
+    const sortedTests = [...dailyTests].sort((a, b) => (b.publishedDate || "").localeCompare(a.publishedDate || ""));
     res.json(sortedTests);
   });
 
-  app.get("/api/daily-test/:id", authenticateToken, async (req, res) => {
-    const { id } = req.params;
-    const dailyTests = (await fetchSheetData("DailyTests")) || getLocalDB().dailyTests;
-    const test = dailyTests.find((t) => t.id === id);
+app.get("/api/daily-test/:id", authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const dailyTests = (await fetchSheetData("DailyTests")) || getLocalDB().dailyTests;
+  const test = dailyTests.find((t) => t.id === id);
 
-    if (test) {
-      const approved = (await fetchSheetData("ApprovedQuestions")) || getLocalDB().approvedQuestions;
-      const questions = approved.filter((q) => test.questionIds.includes(q.id));
-      res.json({ ...test, questions });
-    } else {
-      res.status(404).json({ message: "Test not found." });
-    }
-  });
+  if (test) {
+    const approved = (await fetchSheetData("ApprovedQuestions")) || getLocalDB().approvedQuestions;
+    const questions = approved.filter((q) => test.questionIds.includes(q.id));
 
-  app.get("/api/daily-test", authenticateToken, async (req, res) => {
-    const today = new Date().toISOString().split("T")[0];
-    const dailyTests = (await fetchSheetData("DailyTests")) || getLocalDB().dailyTests;
-    const test = dailyTests.find((t) => t.testDate === today);
+    const allPassages = (await fetchSheetData("DailyPassages")) || getLocalDB().dailyPassages;
+    const pIds: string[] = Array.isArray(test.passageIds) ? test.passageIds : [];
+    const passages = allPassages.filter((p: any) => pIds.includes(p.id));
 
-    if (test) {
-      const approved = (await fetchSheetData("ApprovedQuestions")) || getLocalDB().approvedQuestions;
-      const questions = approved.filter((q) => test.questionIds.includes(q.id));
-      res.json({ ...test, questions });
-    } else {
-      res.status(404).json({ message: "No test available for today." });
+    res.json({ ...test, questions, passages });
+  } else {
+    res.status(404).json({ message: "Test not found." });
+  }
+});
+
+app.get("/api/daily-test", authenticateToken, async (req, res) => {
+  const today = new Date().toISOString().split("T")[0];
+  const dailyTests = (await fetchSheetData("DailyTests")) || getLocalDB().dailyTests;
+  const test = dailyTests.find((t) => (t.publishedDate || "").split("T")[0] === today);
+
+  if (test) {
+    const approved = (await fetchSheetData("ApprovedQuestions")) || getLocalDB().approvedQuestions;
+    const questions = approved.filter((q) => test.questionIds.includes(q.id));
+
+    const allPassages = (await fetchSheetData("DailyPassages")) || getLocalDB().dailyPassages;
+    const pIds: string[] = Array.isArray(test.passageIds) ? test.passageIds : [];
+    const passages = allPassages.filter((p: any) => pIds.includes(p.id));
+
+    res.json({ ...test, questions, passages });
+  } else {
+    res.status(404).json({ message: "No test available for today." });
+  }
+});
+
+  app.get("/api/daily-results", authenticateToken, async (req: any, res) => {
+    try {
+      const allResults = (await fetchSheetData("TestResults")) || getLocalDB().testResults;
+      res.json(allResults.filter((r: any) => r.studentId === req.user.id));
+    } catch (err: any) {
+      res.status(500).json({ message: "Failed to load daily test results" });
     }
   });
 
@@ -885,6 +917,38 @@ Ambiguous wording that makes a question unfair rather than hard
       res.status(500).json({ message: "Failed to add passage" });
     }
   });
+  
+  app.post("/api/daily-passages", authenticateToken, async (req: any, res) => {
+  if (req.user.role !== "admin") return res.sendStatus(403);
+  try {
+    const sheetData = req.body.kind === "table" ? req.body.table : req.body.kind === "tabs" ? req.body.tabs : undefined;
+    const passage = {
+      id: req.body.id || `DP${Date.now()}`,
+      title: req.body.title,
+      kind: req.body.kind,
+      text: req.body.text ?? "",
+      data: sheetData,
+      chartImageUrl: req.body.chartImageUrl ?? "",
+      targetExam: req.body.targetExam || "GMAT",
+    };
+    await appendSheetData("DailyPassages", passage);
+
+    const db = getLocalDB();
+    const { data, ...passageRest } = passage;
+    const localPassage =
+      req.body.kind === "table"
+        ? { ...passageRest, table: sheetData }
+        : req.body.kind === "tabs"
+        ? { ...passageRest, tabs: sheetData }
+        : passageRest;
+    db.dailyPassages.push(localPassage);
+    saveLocalDB(db);
+
+    res.json({ success: true, passageId: passage.id });
+  } catch (err: any) {
+    res.status(500).json({ message: "Failed to add daily passage" });
+  }
+});
 
   app.get("/api/sectional-questions", authenticateToken, async (req: any, res) => {
     if (req.user.role !== "admin") return res.sendStatus(403);
