@@ -441,16 +441,6 @@ function Dashboard({ user, setActiveTab }: { user: UserProfile, setActiveTab: (t
             <div className="text-3xl font-bold">{stats.avgScore}%</div>
           </CardContent>
         </Card>
-        <Card className="shadow-md">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Current Streak</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold flex items-center gap-2">
-              {stats.streak} Days 🔥
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
