@@ -42,7 +42,7 @@ import { apiRequest } from "@/src/lib/api";
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────
 
-type GmatSection = "Quant" | "Verbal" | "DataInsights";
+type DailySection = "Quantitative" | "DILR" | "VARC";
 
 type QuestionType =
   | "standard_mcq" // Verbal, Quant, Data Sufficiency, and plain-MCQ MSR sub-questions
@@ -76,10 +76,18 @@ interface Stimulus {
   tabs?: StimulusTab[];
 }
 
+// A single row inside a Table Analysis (or MSR statement-grid) question.
+// Two shapes are supported, distinguished by whether `choices` is present:
+//   - Binary Yes/No statement:  { id, text, correctAnswer: "Yes" | "No" }
+//   - Dropdown statement:       { id, text, choices: [...], correctAnswer: "<one of choices>" }
+// correctAnswer is a plain string in both cases so the same comparison logic
+// (isAnswerComplete / isAnswerCorrect) works for either shape without a
+// separate code path.
 interface StatementRow {
   id: string;
   text: string;
-  correctAnswer: "Yes" | "No";
+  choices?: string[]; // presence of this array switches the row to a dropdown
+  correctAnswer: string; // "Yes" | "No" for binary rows, or one of `choices` for dropdown rows
 }
 
 interface DropdownBlank {
@@ -88,9 +96,9 @@ interface DropdownBlank {
   correctChoice: string;
 }
 
-interface SectionalQuestion {
+interface DailyQuestion {
   id: string;
-  section: GmatSection;
+  section: DailySection;
   questionType: QuestionType;
   questionText: string;
   difficulty: "Easy" | "Medium" | "Hard";
@@ -101,6 +109,7 @@ interface SectionalQuestion {
   correctAnswer?: string;
 
   // table_analysis, and MSR statement-grid sub-questions
+  // (each row is independently either a Yes/No toggle or a dropdown — see StatementRow)
   statements?: StatementRow[];
 
   // graphics_interpretation — questionText may embed {{blankId}} tokens
@@ -114,18 +123,18 @@ interface SectionalQuestion {
   explanation: string;
 }
 
-interface SectionalTest {
+interface DailyTestData {
   id: string;
   name: string;
-  section: GmatSection;
+  publishedDate?: string;
   durationMinutes: number;
-  questions: SectionalQuestion[];
+  questions: DailyQuestion[];
   passages?: Stimulus[];
 }
 
-interface SectionalResult {
+interface DailyResult {
   testId: string;
-  section: string;
+  testName?: string;
   totalScore: number; // accuracy %
   correctAnswers: number;
   wrongAnswers: number;
@@ -133,14 +142,18 @@ interface SectionalResult {
   timeSpent: number;
   studentAnswers: Record<string, QuestionAnswer>;
   scaledScore: number; // 60–90
+  sectionScores: Record<DailySection, number>; // correct-count per section, kept for Dashboard/Analytics compatibility
   editsUsed?: number;
   reachedReview?: boolean;
+  testDate?: string;
 }
 
 // Polymorphic per-question answer — shape depends on the question's type.
+// "statements" values are plain strings so they can hold either a "Yes"/"No"
+// toggle result or a dropdown-selected choice, whichever the row calls for.
 type QuestionAnswer =
   | { kind: "single"; value: string }
-  | { kind: "statements"; values: Record<string, "Yes" | "No"> }
+  | { kind: "statements"; values: Record<string, string> }
   | { kind: "blanks"; values: Record<string, string> }
   | { kind: "twoPart"; part1?: string; part2?: string };
 
@@ -150,10 +163,10 @@ type AnswersMap = Record<string, QuestionAnswer>;
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────
 
-const MAX_EDITS_PER_SECTION = 3;
+const MAX_EDITS_PER_TEST = 3;
 
-const SECTION_META: Record<
-  GmatSection,
+const DAILY_SECTION_META: Record<
+  DailySection,
   {
     label: string;
     short: string;
@@ -165,39 +178,42 @@ const SECTION_META: Record<
     minutes: number;
   }
 > = {
-  Quant: {
+  Quantitative: {
     label: "Quantitative Reasoning",
     short: "Quant",
     color: "bg-emerald-500",
     lightColor: "bg-emerald-50",
     textColor: "text-emerald-700",
     borderColor: "border-emerald-200",
-    questions: 21,
-    minutes: 45,
+    questions: 7,
+    minutes: 40,
   },
-  Verbal: {
-    label: "Verbal Reasoning",
-    short: "Verbal",
+  VARC: {
+    label: "Verbal Ability & Reading Comprehension",
+    short: "VARC",
     color: "bg-violet-500",
     lightColor: "bg-violet-50",
     textColor: "text-violet-700",
     borderColor: "border-violet-200",
-    questions: 23,
-    minutes: 45,
+    questions: 7,
+    minutes: 40,
   },
-  DataInsights: {
-    label: "Data Insights",
-    short: "DI",
+  DILR: {
+    label: "Data Interpretation & Logical Reasoning",
+    short: "DILR",
     color: "bg-blue-500",
     lightColor: "bg-blue-50",
     textColor: "text-blue-700",
     borderColor: "border-blue-200",
-    questions: 20,
-    minutes: 45,
+    questions: 6,
+    minutes: 40,
   },
 };
 
-const SECTION_ORDER: GmatSection[] = ["Quant", "Verbal", "DataInsights"];
+// Daily tests mix all three sections into a single sitting (unlike sectional
+// tests, which are one section each), so this order is only used for
+// per-question badges and the section-mix legend on the list page.
+const DAILY_SECTION_ORDER: DailySection[] = ["Quantitative", "DILR", "VARC"];
 
 const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
   standard_mcq: "Multiple Choice",
@@ -214,13 +230,13 @@ const STIMULUS_KIND_LABELS: Record<StimulusKind, string> = {
   tabs: "Sources",
 };
 
-type SortKey = "section" | "name" | "duration" | "status";
+type SortKey = "date" | "status";
 
 // ─────────────────────────────────────────────────────────────────────────
 // HELPERS — answer state
 // ─────────────────────────────────────────────────────────────────────────
 
-function emptyAnswerFor(q: SectionalQuestion): QuestionAnswer {
+function emptyAnswerFor(q: DailyQuestion): QuestionAnswer {
   switch (q.questionType) {
     case "table_analysis":
       return { kind: "statements", values: {} };
@@ -235,7 +251,7 @@ function emptyAnswerFor(q: SectionalQuestion): QuestionAnswer {
   }
 }
 
-function isAnswerComplete(q: SectionalQuestion, ans?: QuestionAnswer): boolean {
+function isAnswerComplete(q: DailyQuestion, ans?: QuestionAnswer): boolean {
   if (!ans) return false;
   switch (ans.kind) {
     case "single":
@@ -253,7 +269,7 @@ function isAnswerComplete(q: SectionalQuestion, ans?: QuestionAnswer): boolean {
   }
 }
 
-function isAnswerCorrect(q: SectionalQuestion, ans?: QuestionAnswer): boolean {
+function isAnswerCorrect(q: DailyQuestion, ans?: QuestionAnswer): boolean {
   if (!ans) return false;
   switch (ans.kind) {
     case "single":
@@ -275,14 +291,89 @@ function answersEqual(a: QuestionAnswer, b: QuestionAnswer): boolean {
 // HELPERS — misc
 // ─────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────
+// Inline formatting — content editors mark up bold/underline/italic directly
+// in the Google Sheet cell using plain tags: <b>, <u>, <i> (also accepts
+// <strong>/<em>). We deliberately don't use markdown (**bold**) because
+// * and _ already appear inside LaTeX math (e.g. subscripts, multiplication)
+// and would collide with it. Example cell content:
+//   "The <b>slope</b> of the line is $m = 2$, so <u>y increases</u> as x grows."
+// Each run — including the text inside a tag — is still passed through
+// <Latex> so KaTeX math keeps rendering normally inside bold/underline text.
+// ─────────────────────────────────────────────────────────────────────────
+
+const FORMAT_TAG_REGEX = /<(\/?)(b|strong|u|i|em)>/gi;
+
+type FormatRun = { text: string; bold: boolean; underline: boolean; italic: boolean };
+
+function parseFormatting(raw: string): FormatRun[] {
+  const runs: FormatRun[] = [];
+  const stack: Array<"bold" | "underline" | "italic"> = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  FORMAT_TAG_REGEX.lastIndex = 0;
+
+  const styleFor = (tag: string): "bold" | "underline" | "italic" =>
+    tag === "b" || tag === "strong" ? "bold" : tag === "u" ? "underline" : "italic";
+
+  const flush = (end: number) => {
+    const content = raw.slice(lastIndex, end);
+    if (content) {
+      runs.push({
+        text: content,
+        bold: stack.includes("bold"),
+        underline: stack.includes("underline"),
+        italic: stack.includes("italic"),
+      });
+    }
+  };
+
+  while ((match = FORMAT_TAG_REGEX.exec(raw)) !== null) {
+    flush(match.index);
+    const [, closing, tagName] = match;
+    const style = styleFor(tagName.toLowerCase());
+    if (closing) {
+      const idx = stack.lastIndexOf(style);
+      if (idx !== -1) stack.splice(idx, 1);
+    } else {
+      stack.push(style);
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  flush(raw.length);
+  return runs;
+}
+
+function FormattedText({ text }: { text: string }) {
+  if (!text) return null;
+  const runs = parseFormatting(text);
+  return (
+    <>
+      {runs.map((run, i) => {
+        let node: React.ReactNode = <Latex>{run.text}</Latex>;
+        if (run.italic) node = <em>{node}</em>;
+        if (run.underline) node = <u>{node}</u>;
+        if (run.bold) node = <strong>{node}</strong>;
+        return <span key={i}>{node}</span>;
+      })}
+    </>
+  );
+}
+
 function MultiParagraphLatex({ text, className }: { text: string; className?: string }) {
   if (!text) return null;
-  const paras = text.split("\n\n");
+  const normalized = text.replace(/\\n/g, "\n").replace(/\\\$/g, "$");
+  const paras = normalized.split("\n\n");
   return (
     <>
       {paras.map((para, i) => (
         <p key={i} className={i > 0 ? `mt-2 ${className || ""}` : className}>
-          <Latex>{para}</Latex>
+          {para.split("\n").map((line, j, arr) => (
+            <React.Fragment key={j}>
+              <FormattedText text={line} />
+              {j < arr.length - 1 && <br />}
+            </React.Fragment>
+          ))}
         </p>
       ))}
     </>
@@ -310,7 +401,7 @@ const IMAGE_URL_REGEX =
 type Segment = { type: "text"; content: string } | { type: "image"; url: string; alt?: string };
 
 function parseSegments(text: string): Segment[] {
-  const normalized = text.replace(/\\n/g, "\n");
+ const normalized = text.replace(/\\n/g, "\n").replace(/\\\$/g, "$");
   const segments: Segment[] = [];
   let lastIndex = 0;
   IMAGE_URL_REGEX.lastIndex = 0;
@@ -402,7 +493,7 @@ function RichText({ text }: { text: string }) {
               .filter(Boolean)
               .map((p, j) => (
                 <p key={j} className="mb-2 last:mb-0">
-                  {p}
+                  <FormattedText text={p} />
                 </p>
               ))}
           </div>
@@ -438,7 +529,7 @@ function SortableTable({ columns, rows }: StimulusTable) {
       const bv = b[sortCol];
       const an = typeof av === "number" ? av : parseFloat(String(av));
       const bn = typeof bv === "number" ? bv : parseFloat(String(bv));
-      const cmp = !isNaN(an) && !isNaN(bn) ? an - bn : String(av).localeCompare(String(bv));
+      const cmp = new Date(a.publishedDate || 0).getTime() - new Date(b.publishedDate || 0).getTime() || a.name.localeCompare(b.name);
       return sortDir === "asc" ? cmp : -cmp;
     });
     return copy;
@@ -599,7 +690,7 @@ function OptionPicker({
               {String.fromCharCode(65 + idx)}
             </div>
             <span className="text-sm">
-              <Latex>{opt}</Latex>
+              <FormattedText text={opt} />
             </span>
           </Label>
         );
@@ -608,6 +699,14 @@ function OptionPicker({
   );
 }
 
+// StatementGrid renders one row per statement. Each row independently picks
+// its own control:
+//   - if the row has a non-empty `choices` array -> render a <select> dropdown
+//     (used for Table Analysis rows like "estimated height where the graph
+//     flattens", with 4 numeric/text options and one correctAnswer)
+//   - otherwise -> render the classic Yes/No toggle buttons
+// This lets a single "statements" question mix binary and dropdown rows if
+// needed, and keeps Table Analysis / MSR statement-grid on one code path.
 function StatementGrid({
   statements,
   values,
@@ -616,33 +715,66 @@ function StatementGrid({
 }: {
   statements: StatementRow[];
   values: Record<string, string>;
-  onSelect: (stId: string, val: "Yes" | "No") => void;
+  onSelect: (stId: string, val: string) => void;
   disabled?: boolean;
 }) {
   return (
     <div className="space-y-2">
-      {statements.map((s, idx) => (
-        <div key={s.id} className="flex items-center justify-between gap-3 p-3 rounded-xl border">
-          <span className="text-sm flex-1">
-            <span className="font-bold text-muted-foreground mr-1">{idx + 1}.</span>
-            {s.text}
-          </span>
-          <div className="flex gap-1.5 shrink-0">
-            {(["Yes", "No"] as const).map((opt) => (
-              <button
-                key={opt}
+      {statements.map((s, idx) => {
+        const isDropdown = !!s.choices && s.choices.length > 0;
+        return (
+          <div key={s.id} className="flex items-center justify-between gap-3 p-3 rounded-xl border">
+            <span className="text-sm flex-1">
+              <span className="font-bold text-muted-foreground mr-1">{idx + 1}.</span>
+              <FormattedText text={s.text} />
+            </span>
+
+            {isDropdown ? (
+              <select
                 disabled={disabled}
-                onClick={() => onSelect(s.id, opt)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors ${
-                  values[s.id] === opt ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:border-primary/40"
+                value={values[s.id] || ""}
+                onChange={(e) => onSelect(s.id, e.target.value)}
+                className={`shrink-0 border-2 rounded-lg px-2.5 py-1.5 text-xs font-bold bg-background max-w-[160px] ${
+                  values[s.id] ? "border-primary bg-blue-50" : "border-dashed border-muted-foreground/40"
                 } ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
               >
-                {opt}
-              </button>
-            ))}
+                <option value="" disabled>
+                  Select…
+                </option>
+                {s.choices!.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="flex gap-1.5 shrink-0">
+                {(["Yes", "No"] as const).map((opt) => {
+                  const isSelected = values[s.id] === opt;
+                  const blocked = disabled && !isSelected;
+                  return (
+                    <button
+                      key={opt}
+                      disabled={blocked}
+                      aria-pressed={isSelected}
+                      onClick={() => onSelect(s.id, opt)}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold border-2 transition-all ${
+                        blocked ? "cursor-not-allowed opacity-50" : "cursor-pointer"
+                      } ${
+                        isSelected
+                          ? "border-primary bg-blue-50 ring-1 ring-primary text-primary"
+                          : "border-border text-muted-foreground hover:border-primary/30 hover:bg-secondary/30"
+                      }`}
+                    >
+                      {opt}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -743,7 +875,7 @@ function TwoPartGrid({
           {options.map((opt, idx) => (
             <tr key={opt} className={idx % 2 === 0 ? "bg-background" : "bg-secondary/20"}>
               <td className="px-3 py-2 border-t font-medium">
-                <Latex>{opt}</Latex>
+                <FormattedText text={opt} />
               </td>
               <td className="px-3 py-2 border-t text-center">
                 <input
@@ -784,11 +916,11 @@ function QuestionBody({
   onSelectPart1,
   onSelectPart2,
 }: {
-  question: SectionalQuestion;
+  question: DailyQuestion;
   answer?: QuestionAnswer;
   disabled?: boolean;
   onSelectSingle: (val: string) => void;
-  onSelectStatement: (stId: string, val: "Yes" | "No") => void;
+  onSelectStatement: (stId: string, val: string) => void;
   onSelectBlank: (blankId: string, val: string) => void;
   onSelectPart1: (val: string) => void;
   onSelectPart2: (val: string) => void;
@@ -874,16 +1006,16 @@ function StatusDot({
 // MAIN COMPONENT
 // ─────────────────────────────────────────────────────────────────────────
 
-export default function sectionalTest({ user }: { user: any }) {
+export default function DailyTest({ user }: { user: any }) {
   const [view, setView] = useState<"list" | "instructions" | "test" | "reviewEdit" | "result">("list");
-  const [availableTests, setAvailableTests] = useState<SectionalTest[]>([]);
-  const [attempts, setAttempts] = useState<Record<string, SectionalResult>>({});
-  const [selectedTest, setSelectedTest] = useState<SectionalTest | null>(null);
+  const [availableTests, setAvailableTests] = useState<DailyTestData[]>([]);
+  const [attempts, setAttempts] = useState<Record<string, DailyResult>>({});
+  const [selectedTest, setSelectedTest] = useState<DailyTestData | null>(null);
   const [loading, setLoading] = useState(true);
   const [testLoading, setTestLoading] = useState(false);
 
   // List sorting
-  const [sortKey, setSortKey] = useState<SortKey>("section");
+  const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   // Sequential test state
@@ -892,7 +1024,7 @@ export default function sectionalTest({ user }: { user: any }) {
   const [flagged, setFlagged] = useState<Set<string>>(new Set());
   const [timeLeft, setTimeLeft] = useState(0);
   const [submitted, setSubmitted] = useState(false);
-  const [result, setResult] = useState<SectionalResult | null>(null);
+  const [result, setResult] = useState<DailyResult | null>(null);
   const [activeStimulus, setActiveStimulus] = useState<Stimulus | null>(null);
   const [reviewMode, setReviewMode] = useState(false); // post-submission full answer review
 
@@ -902,7 +1034,7 @@ export default function sectionalTest({ user }: { user: any }) {
   const reachedReviewRef = useRef(false);
 
   const editsUsed = editedQuestions.size;
-  const editsLeft = MAX_EDITS_PER_SECTION - editsUsed;
+  const editsLeft = MAX_EDITS_PER_TEST - editsUsed;
 
   // ── Load tests ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -912,15 +1044,15 @@ export default function sectionalTest({ user }: { user: any }) {
   const loadTests = async () => {
     setLoading(true);
     try {
-      const [tests, prevResults] = await Promise.all([apiRequest("/sectional-tests"), apiRequest("/sectional-results")]);
+      const [tests, prevResults] = await Promise.all([apiRequest("/daily-tests"), apiRequest("/daily-results")]);
       setAvailableTests(tests || []);
-      const map: Record<string, SectionalResult> = {};
-      (prevResults || []).forEach((r: SectionalResult) => {
+      const map: Record<string, DailyResult> = {};
+      (prevResults || []).forEach((r: DailyResult) => {
         map[r.testId] = r;
       });
       setAttempts(map);
     } catch (err: any) {
-      toast.error("Failed to load sectional tests");
+      toast.error("Failed to load daily tests");
     } finally {
       setLoading(false);
     }
@@ -942,7 +1074,7 @@ export default function sectionalTest({ user }: { user: any }) {
 
   // ── questionById lookup ───────────────────────────────────────────────
   const questionById = useMemo(() => {
-    const map: Record<string, SectionalQuestion> = {};
+    const map: Record<string, DailyQuestion> = {};
     (selectedTest?.questions ?? []).forEach((q) => (map[q.id] = q));
     return map;
   }, [selectedTest]);
@@ -960,11 +1092,11 @@ export default function sectionalTest({ user }: { user: any }) {
   }, [displayedIdx, selectedTest, view]);
 
   // ── Actions ──────────────────────────────────────────────────────────────
-  const startTest = async (test: SectionalTest) => {
+  const startTest = async (test: DailyTestData) => {
     if (attempts[test.id]) {
       setTestLoading(true);
       try {
-        const fullTest = await apiRequest(`/sectional-test/${test.id}`);
+        const fullTest = await apiRequest(`/daily-test/${test.id}`);
         setSelectedTest(fullTest);
         setResult(attempts[test.id]);
         setAnswers(attempts[test.id].studentAnswers || {});
@@ -979,7 +1111,7 @@ export default function sectionalTest({ user }: { user: any }) {
 
     setTestLoading(true);
     try {
-      const fullTest = await apiRequest(`/sectional-test/${test.id}`);
+      const fullTest = await apiRequest(`/daily-test/${test.id}`);
       if (!fullTest?.questions?.length) {
         toast.error("This test has no questions yet. Please check the sheet data.");
         return;
@@ -1048,7 +1180,7 @@ export default function sectionalTest({ user }: { user: any }) {
 
     const alreadyEdited = editedQuestions.has(qId);
     if (!alreadyEdited && editsLeft <= 0) {
-      toast.error("You've used all 3 answer changes allowed for this section.");
+      toast.error("You've used all 3 answer changes allowed for this test.");
       return;
     }
     setAnswers((prev) => ({ ...prev, [qId]: next }));
@@ -1060,7 +1192,9 @@ export default function sectionalTest({ user }: { user: any }) {
   const changeAnswer = view === "reviewEdit" ? reviewChange : forwardChange;
 
   const setSingle = (qId: string, val: string) => changeAnswer(qId, () => ({ kind: "single", value: val }));
-  const setStatement = (qId: string, stId: string, val: "Yes" | "No") =>
+  // val is a plain string here so it works for both Yes/No toggle rows and
+  // dropdown-choice rows in table_analysis / MSR statement grids.
+  const setStatement = (qId: string, stId: string, val: string) =>
     changeAnswer(qId, (prev) => ({
       kind: "statements",
       values: { ...(prev.kind === "statements" ? prev.values : {}), [stId]: val },
@@ -1099,6 +1233,7 @@ export default function sectionalTest({ user }: { user: any }) {
     let correct = 0,
       wrong = 0,
       skipped = 0;
+    const sectionScores: Record<DailySection, number> = { Quantitative: 0, DILR: 0, VARC: 0 };
 
     selectedTest.questions.forEach((q) => {
       const ans = answers[q.id];
@@ -1106,6 +1241,7 @@ export default function sectionalTest({ user }: { user: any }) {
         skipped++;
       } else if (isAnswerCorrect(q, ans)) {
         correct++;
+        if (sectionScores[q.section] !== undefined) sectionScores[q.section]++;
       } else {
         wrong++;
       }
@@ -1116,9 +1252,9 @@ export default function sectionalTest({ user }: { user: any }) {
     const totalScore = Math.round((correct / total) * 100);
     const timeSpent = selectedTest.durationMinutes * 60 - timeLeft;
 
-    const payload: SectionalResult = {
+    const payload: DailyResult = {
       testId: selectedTest.id,
-      section: selectedTest.section,
+      testName: selectedTest.name,
       totalScore,
       correctAnswers: correct,
       wrongAnswers: wrong,
@@ -1126,16 +1262,18 @@ export default function sectionalTest({ user }: { user: any }) {
       timeSpent,
       studentAnswers: answers,
       scaledScore,
+      sectionScores,
       editsUsed,
       reachedReview: reachedReviewRef.current,
+      testDate: new Date().toISOString(),
     };
 
     try {
-      await apiRequest("/sectional-results", { method: "POST", body: JSON.stringify(payload) });
+      await apiRequest("/daily-results", { method: "POST", body: JSON.stringify(payload) });
       setResult(payload);
       setAttempts((prev) => ({ ...prev, [selectedTest.id]: payload }));
       setView("result");
-      toast.success("Section submitted!");
+      toast.success("Test submitted!");
     } catch (err: any) {
       toast.error("Failed to save result");
       setResult(payload);
@@ -1145,32 +1283,39 @@ export default function sectionalTest({ user }: { user: any }) {
   }, [selectedTest, submitted, answers, timeLeft, editsUsed]);
 
   // ── Sorting for the list view ───────────────────────────────────────────
-  const sortedTests = useMemo(() => {
-    const rank = (s: GmatSection) => SECTION_ORDER.indexOf(s);
-    const copy = [...availableTests];
-    copy.sort((a, b) => {
-      let cmp = 0;
-      switch (sortKey) {
-        case "section":
-          cmp = rank(a.section) - rank(b.section) || a.name.localeCompare(b.name);
-          break;
-        case "name":
-          cmp = a.name.localeCompare(b.name);
-          break;
-        case "duration":
-          cmp = a.durationMinutes - b.durationMinutes;
-          break;
-        case "status": {
-          const aDone = attempts[a.id] ? 1 : 0;
-          const bDone = attempts[b.id] ? 1 : 0;
-          cmp = aDone - bDone || a.name.localeCompare(b.name);
-          break;
-        }
+  // Daily tests mix all three sections into one sitting, so — unlike the
+  // sectional list — there's no per-section grouping here; "date" replaces
+  // "section" as the default sort.
+ const sortedTests = useMemo(() => {
+  const copy = [...availableTests];
+  copy.sort((a, b) => {
+    let primary = 0;
+    switch (sortKey) {
+      case "date":
+        primary = new Date(a.publishedDate || 0).getTime() - new Date(b.publishedDate || 0).getTime();
+        break;
+      case "status": {
+        const aDone = attempts[a.id] ? 1 : 0;
+        const bDone = attempts[b.id] ? 1 : 0;
+        primary = aDone - bDone;
+        break;
       }
-      return sortDir === "asc" ? cmp : -cmp;
+    }
+        const cmp = primary || a.name.localeCompare(b.name);
+    return sortDir === "desc" ? -cmp : cmp;
+  });
+  return copy;
+}, [availableTests, sortKey, sortDir, attempts]);
+
+  // Section mix (question count per section) for a given test — drives the
+  // little colored dots on each card since a daily test spans all 3 sections.
+  const sectionMix = (t: DailyTestData) => {
+    const counts: Record<DailySection, number> = { Quantitative: 0, DILR: 0, VARC: 0 };
+    (t.questions || []).forEach((q) => {
+      if (counts[q.section] !== undefined) counts[q.section]++;
     });
-    return copy;
-  }, [availableTests, sortKey, sortDir, attempts]);
+    return counts;
+  };
 
   // ─────────────────────────────────────────────────────────────────────
   // VIEWS
@@ -1186,23 +1331,15 @@ export default function sectionalTest({ user }: { user: any }) {
 
   // ── LIST ────────────────────────────────────────────────────────────────
   if (view === "list") {
-    const groupedBySection = sortKey === "section";
-    const grouped = groupedBySection
-      ? (sortDir === "asc" ? SECTION_ORDER : [...SECTION_ORDER].reverse()).reduce((acc, sec) => {
-          acc[sec] = sortedTests.filter((t) => t.section === sec);
-          return acc;
-        }, {} as Record<GmatSection, SectionalTest[]>)
-      : null;
-
-    const renderCard = (t: SectionalTest) => {
-      const meta = SECTION_META[t.section];
+    const renderCard = (t: DailyTestData) => {
       const attempted = attempts[t.id];
+      const mix = sectionMix(t);
       return (
-        <Card key={t.id} className={`hover:shadow-md transition-all border-t-4 ${meta.color.replace("bg-", "border-t-")}`}>
+        <Card key={t.id} className="hover:shadow-md transition-all border-t-4 border-t-primary">
           <CardHeader className="pb-2">
             <div className="flex justify-between items-start">
-              <Badge variant="outline" className={`${meta.lightColor} ${meta.textColor} ${meta.borderColor} text-[10px] font-bold`}>
-                {meta.short}
+              <Badge variant="outline" className="text-[10px] font-bold">
+                {t.publishedDate ? new Date(t.publishedDate).toLocaleDateString() : "Daily Sprint"}
               </Badge>
               {attempted ? (
                 <Badge className="bg-green-100 text-green-700 hover:bg-green-100 border-none text-[10px]">Completed</Badge>
@@ -1212,7 +1349,7 @@ export default function sectionalTest({ user }: { user: any }) {
                 </Badge>
               )}
             </div>
-            <CardTitle className="text-base mt-2">{t.name}</CardTitle>
+            <CardTitle className="text-base mt-2">{t.name || "Daily Practice Test"}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex gap-4 text-xs text-muted-foreground">
@@ -1223,12 +1360,20 @@ export default function sectionalTest({ user }: { user: any }) {
                 <BookOpen size={12} /> {t.questions?.length ?? "–"} Qs
               </span>
             </div>
+            <div className="flex gap-3 text-[10px] font-bold">
+              {DAILY_SECTION_ORDER.map((sec) => (
+                <span key={sec} className={`flex items-center gap-1 ${DAILY_SECTION_META[sec].textColor}`}>
+                  <span className={`w-2 h-2 rounded-full ${DAILY_SECTION_META[sec].color}`} />
+                  {DAILY_SECTION_META[sec].short} {mix[sec]}
+                </span>
+              ))}
+            </div>
             {attempted && (
-              <div className={`p-3 rounded-xl ${meta.lightColor} border ${meta.borderColor}`}>
+              <div className="p-3 rounded-xl bg-secondary/30 border">
                 <div className="flex gap-4 text-center">
                   <div className="flex-1">
                     <p className="text-[10px] font-bold uppercase text-muted-foreground">Score</p>
-                    <p className={`text-xl font-black ${meta.textColor}`}>{attempted.scaledScore}</p>
+                    <p className="text-xl font-black text-primary">{attempted.scaledScore}</p>
                   </div>
                   <div className="w-px bg-border" />
                   <div className="flex-1">
@@ -1244,7 +1389,7 @@ export default function sectionalTest({ user }: { user: any }) {
               </div>
             )}
             <Button className="w-full" variant={attempted ? "outline" : "default"} onClick={() => startTest(t)} disabled={testLoading}>
-              {testLoading && selectedTest?.id === t.id ? "Loading..." : attempted ? "Review Attempt" : "Start Section"}
+              {testLoading && selectedTest?.id === t.id ? "Loading..." : attempted ? "Review Attempt" : "Start Test"}
             </Button>
           </CardContent>
         </Card>
@@ -1254,13 +1399,13 @@ export default function sectionalTest({ user }: { user: any }) {
     return (
       <div className="space-y-8">
         <header>
-          <h1 className="text-3xl font-bold tracking-tight">GMAT Sectional Tests</h1>
-          <p className="text-muted-foreground mt-1">GMAT Focus Edition section-wise mocks · 45 min · Real exam interface</p>
+          <h1 className="text-3xl font-bold tracking-tight">Daily Practice</h1>
+          <p className="text-muted-foreground mt-1">The Daily Sprint for MBA Success · Quant + DILR + VARC mixed · Real exam interface</p>
         </header>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {SECTION_ORDER.map((sec) => {
-            const meta = SECTION_META[sec];
+          {DAILY_SECTION_ORDER.map((sec) => {
+            const meta = DAILY_SECTION_META[sec];
             return (
               <div key={sec} className={`rounded-xl p-4 border ${meta.lightColor} ${meta.borderColor}`}>
                 <div className="flex items-center gap-2 mb-2">
@@ -1268,9 +1413,7 @@ export default function sectionalTest({ user }: { user: any }) {
                   <span className={`text-xs font-bold uppercase tracking-wider ${meta.textColor}`}>{meta.short}</span>
                 </div>
                 <p className="font-semibold text-sm">{meta.label}</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {meta.questions} Qs · {meta.minutes} min
-                </p>
+                <p className="text-xs text-muted-foreground mt-1">Mixed into every daily test</p>
               </div>
             );
           })}
@@ -1278,9 +1421,9 @@ export default function sectionalTest({ user }: { user: any }) {
 
         {availableTests.length === 0 ? (
           <div className="py-20 flex flex-col items-center justify-center text-center border border-dashed rounded-2xl bg-background">
-            <BookOpen className="h-12 w-12 text-muted-foreground/30 mb-4" />
-            <h3 className="font-bold text-lg">No Sectional Tests Available</h3>
-            <p className="text-muted-foreground max-w-sm mt-1">Your admin hasn't published any sectional tests yet. Check back soon.</p>
+            <AlertCircle className="h-12 w-12 text-muted-foreground/30 mb-4" />
+            <h3 className="font-bold text-lg">No Tests Available</h3>
+            <p className="text-muted-foreground max-w-sm mt-1">There are no daily tests published yet. Please check back later.</p>
           </div>
         ) : (
           <div className="space-y-6">
@@ -1289,50 +1432,28 @@ export default function sectionalTest({ user }: { user: any }) {
               <span className="text-sm font-bold text-muted-foreground flex items-center gap-1.5">
                 <SortIcon size={14} /> Sort by
               </span>
-              <Select value={sortKey} onValueChange={(v) => setSortKey(v as SortKey)}>
-                <SelectTrigger className="w-[160px] h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="section">Section</SelectItem>
-                  <SelectItem value="name">Name</SelectItem>
-                  <SelectItem value="duration">Duration</SelectItem>
-                  <SelectItem value="status">Status</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-9 gap-1.5"
-                onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
-                title="Reverse order"
-              >
-                {sortDir === "asc" ? <ArrowUp size={14} /> : <ArrowDown size={14} />}
-                {sortDir === "asc" ? "Ascending" : "Descending"}
-              </Button>
+             <Select value={sortKey} onValueChange={(v) => setSortKey(v as SortKey)}>
+  <SelectTrigger className="w-[160px] h-9">
+    <SelectValue />
+  </SelectTrigger>
+  <SelectContent>
+    <SelectItem value="date">Date</SelectItem>
+    <SelectItem value="status">Status</SelectItem>
+  </SelectContent>
+</Select>
+<Button
+  variant="outline"
+  size="sm"
+  className="h-9 gap-1.5"
+  onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+  title="Reverse order"
+>
+  {sortDir === "asc" ? <ArrowUp size={14} /> : <ArrowDown size={14} />}
+  {sortDir === "asc" ? "Ascending" : "Descending"}
+</Button>
             </div>
 
-            {groupedBySection && grouped ? (
-              <div className="space-y-8">
-                {(sortDir === "asc" ? SECTION_ORDER : [...SECTION_ORDER].reverse()).map((sec) => {
-                  const tests = grouped[sec];
-                  if (!tests?.length) return null;
-                  const meta = SECTION_META[sec];
-                  return (
-                    <div key={sec}>
-                      <div className="flex items-center gap-3 mb-4">
-                        <div className={`w-3 h-3 rounded-full ${meta.color}`} />
-                        <h2 className="font-bold text-lg">{meta.label}</h2>
-                        <Badge variant="secondary">{tests.length} tests</Badge>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{tests.map(renderCard)}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{sortedTests.map(renderCard)}</div>
-            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{sortedTests.map(renderCard)}</div>
           </div>
         )}
       </div>
@@ -1341,31 +1462,26 @@ export default function sectionalTest({ user }: { user: any }) {
 
   // ── INSTRUCTIONS ─────────────────────────────────────────────────────────
   if (view === "instructions" && selectedTest) {
-    const meta = SECTION_META[selectedTest.section];
     const rules = [
-      "This is a timed section test. The timer starts the moment you click Begin, and keeps running through the review screen described below.",
-      "Questions appear one at a time and you cannot skip ahead. You must complete the current question before the Next button unlocks.",
+      "This is a timed test. The timer starts the moment you click Begin, and keeps running through the review screen described below.",
+      "Questions appear one at a time, mixing Quant, DILR, and VARC — and you cannot skip ahead. You must complete the current question before the Next button unlocks.",
       "There is no negative marking — an incorrect answer costs you nothing beyond the question itself. But an unanswered question is not allowed; you cannot leave one blank to look at a later question.",
       "While moving forward, you can bookmark (flag) any question, as many as you like, to find it quickly later.",
-      "If you answer the final question with time still on the clock, you'll reach the Question Review & Edit screen. There you can open any question in the section — but you may change at most 3 answers in total for the whole section.",
-      "If the timer hits zero before you finish answering every question, the section submits immediately with whatever you've answered so far, and the Review & Edit screen will not appear.",
-      "Once you submit the section — manually or because time ran out — your answers are final and cannot be changed.",
+      "If you answer the final question with time still on the clock, you'll reach the Question Review & Edit screen. There you can open any question — but you may change at most 3 answers in total for the whole test.",
+      "If the timer hits zero before you finish answering every question, the test submits immediately with whatever you've answered so far, and the Review & Edit screen will not appear.",
+      "Once you submit the test — manually or because time ran out — your answers are final and cannot be changed.",
+      "This test mixes several question formats — plain multiple choice, sortable data tables, chart-based dropdowns, two-part linked answers, and multi-source tabs. Read each question's format carefully before answering.",
     ];
-    if (selectedTest.section === "DataInsights") {
-      rules.push(
-        "This section mixes several question formats — plain multiple choice, sortable data tables, chart-based dropdowns, two-part linked answers, and multi-source tabs. Read each question's format carefully before answering."
-      );
-    }
 
     return (
       <div className="max-w-2xl mx-auto space-y-6">
         <Button variant="ghost" className="gap-2" onClick={() => setView("list")}>
           <ArrowLeft size={16} /> Back
         </Button>
-        <Card className={`border-2 ${meta.borderColor}`}>
-          <CardHeader className={`${meta.lightColor} rounded-t-xl`}>
-            <div className={`text-xs font-bold uppercase tracking-widest ${meta.textColor} mb-1`}>{meta.short}</div>
-            <CardTitle className="text-2xl">{selectedTest.name}</CardTitle>
+        <Card className="border-2 border-primary/20">
+          <CardHeader className="bg-primary/5 rounded-t-xl">
+            <div className="text-xs font-bold uppercase tracking-widest text-primary mb-1">Daily Practice</div>
+            <CardTitle className="text-2xl">{selectedTest.name || "Daily Practice Test"}</CardTitle>
           </CardHeader>
           <CardContent className="pt-6 space-y-6">
             <div className="grid grid-cols-3 gap-4 text-center">
@@ -1385,7 +1501,7 @@ export default function sectionalTest({ user }: { user: any }) {
               <h3 className="font-bold text-sm uppercase tracking-wide text-muted-foreground">Instructions</h3>
               {rules.map((rule, i) => (
                 <div key={i} className="flex gap-3 text-sm">
-                  <span className={`w-5 h-5 shrink-0 rounded-full ${meta.color} text-white flex items-center justify-center text-[10px] font-bold mt-0.5`}>
+                  <span className="w-5 h-5 shrink-0 rounded-full bg-primary text-white flex items-center justify-center text-[10px] font-bold mt-0.5">
                     {i + 1}
                   </span>
                   <p className="text-muted-foreground">{rule}</p>
@@ -1394,7 +1510,7 @@ export default function sectionalTest({ user }: { user: any }) {
             </div>
 
             <Button size="lg" className="w-full" onClick={beginTest}>
-              Begin Section · {selectedTest.durationMinutes} min
+              Begin Test · {selectedTest.durationMinutes} min
             </Button>
           </CardContent>
         </Card>
@@ -1415,7 +1531,7 @@ export default function sectionalTest({ user }: { user: any }) {
     }
     const currentQ = questions[currentIdx];
     if (!currentQ) return null;
-    const meta = SECTION_META[selectedTest.section];
+    const meta = DAILY_SECTION_META[currentQ.section];
     const answeredCount = questions.filter((q) => isAnswerComplete(q, answers[q.id])).length;
     const progress = (answeredCount / questions.length) * 100;
     const isLast = currentIdx === questions.length - 1;
@@ -1428,7 +1544,7 @@ export default function sectionalTest({ user }: { user: any }) {
           <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <Badge className={`${meta.color} text-white border-none`}>{meta.short}</Badge>
-              <span className="text-sm font-medium hidden sm:block truncate max-w-[200px]">{selectedTest.name}</span>
+              <span className="text-sm font-medium hidden sm:block truncate max-w-[200px]">{selectedTest.name || "Daily Practice Test"}</span>
             </div>
             <div className="flex items-center gap-4">
               <div className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground">
@@ -1530,9 +1646,9 @@ export default function sectionalTest({ user }: { user: any }) {
   // ── QUESTION REVIEW & EDIT VIEW ──────────────────────────────────────────
   if (view === "reviewEdit" && selectedTest) {
     const questions = selectedTest.questions;
-    const meta = SECTION_META[selectedTest.section];
     const reviewQ = questions[reviewIdx];
     if (!reviewQ) return null;
+    const meta = DAILY_SECTION_META[reviewQ.section];
     const canEditThisQuestion = editedQuestions.has(reviewQ.id) || editsLeft > 0;
     const answeredCount = questions.filter((q) => isAnswerComplete(q, answers[q.id])).length;
     const showHeaderPrompt = reviewQ.questionType !== "graphics_interpretation";
@@ -1554,7 +1670,7 @@ export default function sectionalTest({ user }: { user: any }) {
                 }`}
               >
                 {editsLeft === 0 ? <Lock size={12} /> : null}
-                {editsLeft} of {MAX_EDITS_PER_SECTION} edits left
+                {editsLeft} of {MAX_EDITS_PER_TEST} edits left
               </div>
               <div
                 className={`flex items-center gap-2 font-mono font-bold text-sm px-3 py-1.5 rounded-lg ${
@@ -1565,7 +1681,7 @@ export default function sectionalTest({ user }: { user: any }) {
                 {formatTime(timeLeft)}
               </div>
               <Button size="sm" variant="destructive" onClick={handleSubmit}>
-                Submit Section
+                Submit Test
               </Button>
             </div>
           </div>
@@ -1575,7 +1691,7 @@ export default function sectionalTest({ user }: { user: any }) {
           <div className="space-y-4">
             <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-800">
               You can open any question below. Changing the answer on a question for the first time this review uses one of your{" "}
-              <strong>{MAX_EDITS_PER_SECTION} edits</strong> for this section — after that, you can keep adjusting that same
+              <strong>{MAX_EDITS_PER_TEST} edits</strong> for this test — after that, you can keep adjusting that same
               question for free. Viewing a question never costs an edit.
             </div>
 
@@ -1635,7 +1751,7 @@ export default function sectionalTest({ user }: { user: any }) {
                 />
                 {!canEditThisQuestion && (
                   <p className="text-xs text-red-600 flex items-center gap-1 mt-2">
-                    <Lock size={12} /> You've used all {MAX_EDITS_PER_SECTION} answer changes for this section — this question's
+                    <Lock size={12} /> You've used all {MAX_EDITS_PER_TEST} answer changes for this test — this question's
                     answer is now locked.
                   </p>
                 )}
@@ -1652,7 +1768,7 @@ export default function sectionalTest({ user }: { user: any }) {
                 </Button>
               ) : (
                 <Button variant="destructive" onClick={handleSubmit}>
-                  Submit Section
+                  Submit Test
                 </Button>
               )}
             </div>
@@ -1696,7 +1812,7 @@ export default function sectionalTest({ user }: { user: any }) {
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Edits remaining</span>
                   <span className={`font-bold ${editsLeft === 0 ? "text-red-600" : meta.textColor}`}>
-                    {editsLeft} / {MAX_EDITS_PER_SECTION}
+                    {editsLeft} / {MAX_EDITS_PER_TEST}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -1707,7 +1823,7 @@ export default function sectionalTest({ user }: { user: any }) {
             </Card>
 
             <Button className="w-full gap-2" size="lg" variant="destructive" onClick={handleSubmit}>
-              Submit Section
+              Submit Test
             </Button>
           </div>
         </div>
@@ -1717,8 +1833,11 @@ export default function sectionalTest({ user }: { user: any }) {
 
   // ── RESULT VIEW ───────────────────────────────────────────────────────────
   if (view === "result" && result && selectedTest) {
-    const meta = SECTION_META[selectedTest.section as GmatSection];
     const questions = selectedTest.questions;
+    const sectionTotals: Record<DailySection, number> = { Quantitative: 0, DILR: 0, VARC: 0 };
+    questions.forEach((q) => {
+      if (sectionTotals[q.section] !== undefined) sectionTotals[q.section]++;
+    });
 
     if (reviewMode) {
       return (
@@ -1741,7 +1860,7 @@ export default function sectionalTest({ user }: { user: any }) {
                   <CardHeader className="pb-2">
                     <div className="flex justify-between items-center flex-wrap gap-2">
                       <div className="flex gap-2 flex-wrap">
-                        <Badge variant="outline">{SECTION_META[q.section]?.short ?? q.section}</Badge>
+                        <Badge variant="outline">{DAILY_SECTION_META[q.section]?.short ?? q.section}</Badge>
                         <Badge variant="outline" className="text-[10px]">
                           {QUESTION_TYPE_LABELS[q.questionType]}
                         </Badge>
@@ -1789,6 +1908,31 @@ export default function sectionalTest({ user }: { user: any }) {
                       onSelectPart2={() => {}}
                     />
 
+                    {/* For statement-grid questions (table_analysis / MSR with statements),
+                        show the correct answer alongside the student's pick per row so the
+                        review is informative even though QuestionBody (disabled) only shows
+                        what the student selected. */}
+                    {(q.questionType === "table_analysis" || (q.questionType === "multi_source_reasoning" && !!q.statements?.length)) && (
+                      <div className="rounded-lg border divide-y overflow-hidden">
+                        {(q.statements ?? []).map((s, sIdx) => {
+                          const studentVal = studentAns?.kind === "statements" ? studentAns.values[s.id] : undefined;
+                          const rowCorrect = studentVal === s.correctAnswer;
+                          return (
+                            <div key={s.id} className="flex items-center justify-between gap-3 px-3 py-2 text-xs bg-secondary/10">
+                              <span className="flex-1">
+                                <span className="font-bold text-muted-foreground mr-1">{sIdx + 1}.</span>
+                                {s.text}
+                              </span>
+                              <span className={`font-bold ${rowCorrect ? "text-green-600" : "text-red-600"}`}>
+                                Your answer: {studentVal ?? "—"}
+                              </span>
+                              {!rowCorrect && <span className="font-bold text-green-600">Correct: {s.correctAnswer}</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
                     {q.questionType === "standard_mcq" || (q.questionType === "multi_source_reasoning" && !q.statements?.length) ? (
                       <div className="grid gap-1.5">
                         {(q.options ?? []).map((opt) => (
@@ -1802,7 +1946,7 @@ export default function sectionalTest({ user }: { user: any }) {
                                 : "bg-secondary/20 border-transparent"
                             }`}
                           >
-                            <Latex> {opt}</Latex>
+                            <FormattedText text={" " + opt} />
                           </div>
                         ))}
                       </div>
@@ -1835,15 +1979,15 @@ export default function sectionalTest({ user }: { user: any }) {
           </Button>
         </div>
 
-        <Card className={`border-2 ${meta.borderColor} overflow-hidden`}>
-          <div className={`${meta.color} px-6 py-5 text-white`}>
-            <p className="text-sm font-bold uppercase tracking-widest opacity-80">{meta.label}</p>
-            <h2 className="text-2xl font-black mt-1">{selectedTest.name}</h2>
+        <Card className="border-2 border-primary/20 overflow-hidden">
+          <div className="bg-primary px-6 py-5 text-white">
+            <p className="text-sm font-bold uppercase tracking-widest opacity-80">Daily Practice</p>
+            <h2 className="text-2xl font-black mt-1">{selectedTest.name || "Daily Practice Test"}</h2>
           </div>
-          <CardContent className="pt-6">
+          <CardContent className="pt-6 space-y-4">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
               {[
-                { label: "Scaled Score", val: `${result.scaledScore}`, color: meta.textColor, big: true },
+                { label: "Scaled Score", val: `${result.scaledScore}`, color: "text-primary", big: true },
                 { label: "Correct / Total", val: `${result.correctAnswers}/${questions.length}`, color: "text-foreground" },
                 { label: "Accuracy", val: `${result.totalScore}%`, color: "text-foreground" },
                 { label: "Time Taken", val: `${Math.floor(result.timeSpent / 60)}m ${result.timeSpent % 60}s`, color: "text-foreground" },
@@ -1854,7 +1998,20 @@ export default function sectionalTest({ user }: { user: any }) {
                 </div>
               ))}
             </div>
-            <p className="text-[11px] text-muted-foreground text-center mt-3">
+            <div className="grid grid-cols-3 gap-3">
+              {DAILY_SECTION_ORDER.map((sec) => {
+                const secMeta = DAILY_SECTION_META[sec];
+                return (
+                  <div key={sec} className={`p-3 rounded-xl ${secMeta.lightColor} border ${secMeta.borderColor} text-center`}>
+                    <p className={`text-[10px] font-bold uppercase ${secMeta.textColor}`}>{secMeta.short}</p>
+                    <p className="text-lg font-black mt-0.5">
+                      {result.sectionScores?.[sec] ?? 0}/{sectionTotals[sec]}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-muted-foreground text-center">
               Scaled score (60–90) is a practice-test approximation based on accuracy, since GMAC's real adaptive scoring algorithm isn't public.
             </p>
           </CardContent>
@@ -1890,7 +2047,7 @@ export default function sectionalTest({ user }: { user: any }) {
             {typeof result.editsUsed === "number" && (
               <>
                 {" "}
-                Used {result.editsUsed} of {MAX_EDITS_PER_SECTION} answer edits.
+                Used {result.editsUsed} of {MAX_EDITS_PER_TEST} answer edits.
               </>
             )}
             {result.reachedReview === false && <> The Review &amp; Edit screen was not reached because time ran out first.</>}
